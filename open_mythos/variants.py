@@ -6,6 +6,109 @@ from open_mythos.main import MythosConfig
 # expert_dim is solved from the residual budget after all other terms.
 
 
+def mythos_nano() -> MythosConfig:
+    """
+    Low-resource baseline for smoke tests and laptop research.
+
+    Dense recurrent block, fixed loop count, byte-tokenizer friendly vocab.
+    """
+
+    return MythosConfig(
+        vocab_size=256,
+        dim=128,
+        n_heads=4,
+        n_kv_heads=2,
+        max_seq_len=256,
+        max_loop_iters=2,
+        prelude_layers=1,
+        coda_layers=1,
+        attn_type="gqa",
+        kv_lora_rank=32,
+        q_lora_rank=64,
+        qk_rope_head_dim=8,
+        qk_nope_head_dim=8,
+        v_head_dim=8,
+        n_experts=4,
+        n_shared_experts=0,
+        n_experts_per_tok=1,
+        expert_dim=128,
+        act_threshold=0.99,
+        rope_theta=10000.0,
+        lora_rank=4,
+        max_output_tokens=256,
+        dropout=0.1,
+        recurrent_use_moe=False,
+        use_act=False,
+        dense_ffn_mult=4.0,
+    )
+
+
+def mythos_tiny() -> MythosConfig:
+    """Single-GPU friendly research config with modest context and loop depth."""
+
+    return MythosConfig(
+        vocab_size=256,
+        dim=256,
+        n_heads=8,
+        n_kv_heads=2,
+        max_seq_len=512,
+        max_loop_iters=4,
+        prelude_layers=1,
+        coda_layers=1,
+        attn_type="gqa",
+        kv_lora_rank=64,
+        q_lora_rank=128,
+        qk_rope_head_dim=16,
+        qk_nope_head_dim=16,
+        v_head_dim=16,
+        n_experts=8,
+        n_shared_experts=0,
+        n_experts_per_tok=1,
+        expert_dim=256,
+        act_threshold=0.99,
+        rope_theta=10000.0,
+        lora_rank=8,
+        max_output_tokens=512,
+        dropout=0.1,
+        recurrent_use_moe=False,
+        use_act=False,
+        dense_ffn_mult=4.0,
+    )
+
+
+def mythos_small() -> MythosConfig:
+    """A larger local-research config for single higher-memory consumer GPUs."""
+
+    return MythosConfig(
+        vocab_size=256,
+        dim=384,
+        n_heads=8,
+        n_kv_heads=2,
+        max_seq_len=1024,
+        max_loop_iters=6,
+        prelude_layers=2,
+        coda_layers=2,
+        attn_type="gqa",
+        kv_lora_rank=96,
+        q_lora_rank=192,
+        qk_rope_head_dim=24,
+        qk_nope_head_dim=24,
+        v_head_dim=24,
+        n_experts=8,
+        n_shared_experts=0,
+        n_experts_per_tok=1,
+        expert_dim=512,
+        act_threshold=0.99,
+        rope_theta=10000.0,
+        lora_rank=8,
+        max_output_tokens=1024,
+        dropout=0.1,
+        recurrent_use_moe=False,
+        use_act=False,
+        dense_ffn_mult=4.0,
+    )
+
+
 def mythos_1b() -> MythosConfig:
     """1B parameter config. Small research/fine-tuning model. dim=2048, 64 experts, 16 loop iters, 4k context."""
     return MythosConfig(

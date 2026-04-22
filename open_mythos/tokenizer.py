@@ -1,6 +1,26 @@
-from transformers import AutoTokenizer
-
 DEFAULT_MODEL_ID = "openai/gpt-oss-20b"
+
+
+class ByteTokenizer:
+    """
+    Minimal byte-level tokenizer for local, low-resource experiments.
+
+    Uses raw UTF-8 bytes as tokens, giving a fixed 256-token vocabulary with
+    no external files or downloads. This keeps the training path self-contained
+    for smoke tests, laptop runs, and tiny research loops.
+    """
+
+    @property
+    def vocab_size(self) -> int:
+        return 256
+
+    def encode(self, text: str) -> list[int]:
+        return list(text.encode("utf-8"))
+
+    def decode(self, token_ids: list[int]) -> str:
+        return bytes(int(i) % 256 for i in token_ids).decode(
+            "utf-8", errors="replace"
+        )
 
 
 class MythosTokenizer:
@@ -27,6 +47,13 @@ class MythosTokenizer:
         Args:
             model_id (str): HuggingFace model identifier or path to tokenizer files.
         """
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise ImportError(
+                "MythosTokenizer requires the 'transformers' package. "
+                "Install it or use ByteTokenizer for low-resource local experiments."
+            ) from exc
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     @property

@@ -97,6 +97,112 @@ print(
 ```
 
 
+## OpenMythos-Mini
+
+`OpenMythos-Mini` is the low-resource research path for this repo. The goal is
+to keep the core OpenMythos idea, a recurrent-depth transformer with looped
+reasoning, while simplifying everything else enough to run on ordinary personal
+hardware.
+
+### Approach
+
+What OpenMythos-Mini keeps:
+
+- recurrent depth as the main research variable
+- the Prelude -> Recurrent Block -> Coda structure
+- loop-wise LoRA and stable LTI injection
+- both `gqa` and `mla` attention as optional ablations
+
+What OpenMythos-Mini simplifies first:
+
+- dense recurrent FFN by default instead of MoE
+- fixed loop depth by default instead of ACT halting
+- built-in byte tokenizer with no downloads
+- local text files instead of heavyweight distributed datasets
+- auto device selection for `cuda`, `mps`, or `cpu`
+
+This is deliberate. The intended research loop is:
+
+1. establish a dense fixed-loop baseline
+2. test deeper recurrent depth
+3. compare ACT vs fixed loops
+4. compare dense vs MoE
+5. compare GQA vs MLA
+6. only then consider bigger additions like Engram-style external memory
+
+### Small Presets
+
+```python
+from open_mythos import OpenMythos, mythos_nano, mythos_tiny, mythos_small
+
+cfg = mythos_nano()
+model = OpenMythos(cfg)
+print(sum(p.numel() for p in model.parameters()))
+```
+
+### Training Scripts
+
+`OpenMythos-Mini` uses these scripts:
+
+- [`training/train_mythos_mini.py`](training/train_mythos_mini.py): train, resume, sample, and log JSONL metrics
+- [`training/generate_mythos_mini.py`](training/generate_mythos_mini.py): generate from a saved checkpoint
+- [`training/compare_mythos_mini_runs.py`](training/compare_mythos_mini_runs.py): compare multiple JSONL run logs
+- [`training/mini_experiments.py`](training/mini_experiments.py): named ablation presets
+
+### Quick Start
+
+```bash
+# smoke test on the bundled byte-level sample corpus
+python training/train_mythos_mini.py --variant nano --steps 20
+
+# train on your own local text file or directory of .txt/.md files
+python training/train_mythos_mini.py --train-data ./data --variant tiny --steps 500
+
+# resume from the most recent checkpoint in checkpoints-mini/
+python training/train_mythos_mini.py --train-data ./data --variant tiny --steps 1000 --resume latest
+
+# run a named ablation preset and log metrics as JSONL
+python training/train_mythos_mini.py --train-data ./data --preset act_probe --steps 500 --metrics-file runs/act_probe.jsonl
+
+# sample from a saved checkpoint
+python training/generate_mythos_mini.py --checkpoint checkpoints-mini/step_001000.pt --prompt "OpenMythos"
+
+# compare multiple runs
+python training/compare_mythos_mini_runs.py runs/baseline.jsonl runs/deep_loops.jsonl runs/act_probe.jsonl
+```
+
+### Built-In Presets
+
+- `baseline`: dense recurrent block, fixed loops, GQA
+- `deep_loops`: same small model with deeper recurrent depth
+- `act_probe`: enables ACT halting for comparison against fixed loops
+- `moe_probe`: enables recurrent MoE for sparse-vs-dense experiments
+- `mla_probe`: swaps GQA for MLA to study cache-efficient attention
+
+### Practical Hardware Targets
+
+- `mythos_nano`: CPU, Apple Silicon, or any CUDA GPU
+- `mythos_tiny`: 1 consumer GPU or a patient laptop run
+- `mythos_small`: 1 higher-memory consumer GPU recommended
+
+### Example Ablation Workflow
+
+```bash
+python training/train_mythos_mini.py --train-data ./data --preset baseline --steps 500 --metrics-file runs/baseline.jsonl
+python training/train_mythos_mini.py --train-data ./data --preset deep_loops --steps 500 --metrics-file runs/deep_loops.jsonl
+python training/train_mythos_mini.py --train-data ./data --preset act_probe --steps 500 --metrics-file runs/act_probe.jsonl
+python training/compare_mythos_mini_runs.py runs/baseline.jsonl runs/deep_loops.jsonl runs/act_probe.jsonl
+```
+
+### Where Engram Fits
+
+Engram-style conditional memory is a promising later-phase experiment for
+OpenMythos-Mini, especially for studying static knowledge lookup versus neural
+computation. It is *not* the first thing to add. The better order is to first
+get clean recurrent-depth baselines, then add memory modules as a separate axis
+of comparison.
+
+
 
 ## Model Variants
 
@@ -114,7 +220,7 @@ from open_mythos import (
     OpenMythos,
 )
 
-cfg = mythos_7b()  # returns a MythosConfig
+cfg = mythos_3b()  # returns a MythosConfig
 model = OpenMythos(cfg)
 
 total = sum(p.numel() for p in model.parameters())
@@ -135,7 +241,10 @@ print(f"Parameters: {total:,}")
 
 ## Training
 
-The training script for the 3B model on FineWeb-Edu is at [`training/3b_fine_web_edu.py`](training/3b_fine_web_edu.py).
+Low-resource local training is available via [`training/train_mythos_mini.py`](training/train_mythos_mini.py).
+
+The original large-scale 3B FineWeb-Edu training script remains at
+[`training/3b_fine_web_edu.py`](training/3b_fine_web_edu.py).
 
 **Single GPU:**
 ```bash

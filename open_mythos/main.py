@@ -39,6 +39,9 @@ class MythosConfig:
         act_threshold   -- ACT halting threshold (cumulative probability to stop looping)
         rope_theta      -- RoPE base frequency
         lora_rank       -- rank of the per-loop depth-wise LoRA adapter
+        recurrent_use_moe -- whether the recurrent block uses MoE or a dense FFN
+        use_act         -- whether ACT halting is enabled inside the recurrent block
+        dense_ffn_mult  -- multiplier used for dense SwiGLU FFNs
     """
 
     vocab_size: int = 32000
@@ -72,6 +75,12 @@ class MythosConfig:
     max_output_tokens: int = 4096
     # Dropout (set 0.0 to disable; 0.1 is standard for pretraining)
     dropout: float = 0.0
+    # Recurrent block FFN mode
+    recurrent_use_moe: bool = True
+    # ACT can be disabled for fixed-depth low-resource training
+    use_act: bool = True
+    # Dense SwiGLU width multiplier for non-MoE blocks
+    dense_ffn_mult: float = 4 / 3
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +226,7 @@ class GQAttention(nn.Module):
             Output tensor of shape (B, T, dim)
         """
         B, T, _ = x.shape
+        freqs_cis = freqs_cis[:T]
         q = self.wq(x).view(B, T, self.n_heads, self.head_dim)
         k = self.wk(x).view(B, T, self.n_kv_heads, self.head_dim)
         v = self.wv(x).view(B, T, self.n_kv_heads, self.head_dim)
@@ -339,6 +349,7 @@ class MLAttention(nn.Module):
             Output tensor of shape (B, T, dim)
         """
         B, T, _ = x.shape
+        freqs_cis = freqs_cis[:T]
 
         # Q
         c_q = self.q_norm(self.q_down(x))
@@ -619,7 +630,8 @@ class TransformerBlock(nn.Module):
         self.attn_norm = RMSNorm(cfg.dim)
         self.ffn_norm = RMSNorm(cfg.dim)
         self.attn = MLAttention(cfg) if cfg.attn_type == "mla" else GQAttention(cfg)
-        self.ffn = MoEFFN(cfg) if use_moe else Expert(cfg.dim, cfg.dim * 4 // 3)
+        dense_dim = max(1, int(cfg.dim * cfg.dense_ffn_mult))
+        self.ffn = MoEFFN(cfg) if use_moe else Expert(cfg.dim, dense_dim)
         self.resid_drop = nn.Dropout(cfg.dropout)
 
     def forward(
@@ -694,7 +706,9 @@ class LTIInjection(nn.Module):
         # Compute in log space to avoid 0 * inf = NaN when log_dt → -∞, log_A → +∞.
         # dt * A_c = -exp(log_dt) * exp(log_A) = -exp(log_dt + log_A)
         # Clamp keeps the product finite in float32 for any gradient step size.
-        return torch.exp(-torch.exp((self.log_dt + self.log_A).clamp(-20, 20)))
+        A = torch.exp(-torch.exp((self.log_dt + self.log_A).clamp(-20, 20)))
+        eps = torch.finfo(A.dtype).eps
+        return A.clamp(min=eps, max=1.0 - eps)
 
     def forward(
         self, h: torch.Tensor, e: torch.Tensor, transformer_out: torch.Tensor
@@ -766,13 +780,15 @@ class RecurrentBlock(nn.Module):
         2. TransformerBlock:     compute attention + MoE FFN on normalized (h + e)
         3. LoRAAdapter:          apply depth-wise LoRA delta to transformer output
         4. LTIInjection:         stable update h = A·h + B·e + transformer_out
-        5. ACTHalting:           accumulate per-position halting probabilities;
-                                  positions that have converged stop contributing
+        5. ACTHalting:           optionally accumulate per-position halting
+                                  probabilities; positions that have converged
+                                  stop contributing
 
     The encoded input e (output of the Prelude) is injected at every step to keep
     the original input signal alive across arbitrary loop depth, preventing drift.
-    The ACT mechanism produces a weighted sum of hidden states across iterations,
-    where the weights reflect when each position converged.
+    When ACT is enabled, the block returns a weighted sum of hidden states across
+    iterations, where the weights reflect when each position converged. When ACT
+    is disabled, the final loop state is returned directly.
 
     More loop iterations at inference = deeper reasoning chains, following the
     depth-extrapolation property of looped transformers (Saunshi et al., 2025).
@@ -785,9 +801,9 @@ class RecurrentBlock(nn.Module):
         """
         super().__init__()
         self.cfg = cfg
-        self.block = TransformerBlock(cfg, use_moe=True)
+        self.block = TransformerBlock(cfg, use_moe=cfg.recurrent_use_moe)
         self.injection = LTIInjection(cfg.dim)
-        self.act = ACTHalting(cfg.dim)
+        self.act = ACTHalting(cfg.dim) if cfg.use_act else None
         self.lora = LoRAAdapter(cfg.dim, cfg.lora_rank, cfg.max_loop_iters)
         self.norm = RMSNorm(cfg.dim)
         self.loop_dim = (
@@ -821,6 +837,16 @@ class RecurrentBlock(nn.Module):
         """
         n_loops = n_loops or self.cfg.max_loop_iters
         B, T, D = h.shape
+
+        if not self.cfg.use_act:
+            for t in range(n_loops):
+                h_loop = loop_index_embedding(h, t, self.loop_dim)
+                combined = self.norm(h_loop + e)
+                cache_key = f"recurrent_loop_{t}"
+                trans_out = self.block(combined, freqs_cis, mask, kv_cache, cache_key)
+                trans_out = trans_out + self.lora(trans_out, t)
+                h = self.injection(h, e, trans_out)
+            return h
 
         halted = torch.zeros(B, T, device=h.device, dtype=torch.bool)
         cumulative_p = torch.zeros(B, T, device=h.device)
@@ -889,8 +915,8 @@ class OpenMythos(nn.Module):
     Key properties:
     - Same weights, more loops → deeper reasoning, no parameter growth
     - Depth extrapolation: train on N loops, test on N+k loops (emergent)
-    - ACT halting: variable compute per position within a batch
-    - MoE FFN in the recurrent block: breadth across domains
+    - ACT halting: optional variable compute per position within a batch
+    - Recurrent FFN can be dense or MoE depending on cfg.recurrent_use_moe
     - LTI-stable injection: spectral radius < 1 guaranteed by construction
     - Supports both GQA and MLA attention (set via cfg.attn_type)
     """

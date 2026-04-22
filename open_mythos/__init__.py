@@ -15,7 +15,7 @@ from open_mythos.main import (
     loop_index_embedding,
     precompute_rope_freqs,
 )
-from open_mythos.tokenizer import MythosTokenizer
+from open_mythos.tokenizer import ByteTokenizer, MythosTokenizer
 from open_mythos.variants import (
     mythos_1b,
     mythos_1t,
@@ -24,7 +24,18 @@ from open_mythos.variants import (
     mythos_50b,
     mythos_100b,
     mythos_500b,
+    mythos_nano,
+    mythos_small,
+    mythos_tiny,
 )
+
+
+def load_tokenizer(model_id: str = "openai/gpt-oss-20b") -> MythosTokenizer:
+    return MythosTokenizer(model_id=model_id)
+
+
+def get_vocab_size(model_id: str = "openai/gpt-oss-20b") -> int:
+    return load_tokenizer(model_id).vocab_size
 
 __all__ = [
     "MythosConfig",
@@ -49,7 +60,11 @@ __all__ = [
     "mythos_100b",
     "mythos_500b",
     "mythos_1t",
+    "mythos_nano",
+    "mythos_tiny",
+    "mythos_small",
     "load_tokenizer",
     "get_vocab_size",
     "MythosTokenizer",
+    "ByteTokenizer",
 ]
