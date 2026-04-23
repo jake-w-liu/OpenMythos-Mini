@@ -1054,7 +1054,10 @@ class OpenMythos(nn.Module):
         """
         kv_cache: dict = {}
         prompt_len = input_ids.shape[1]
-        for step in range(max_new_tokens):
+        remaining = max(0, self.cfg.max_seq_len - prompt_len)
+        total_new_tokens = min(max_new_tokens, remaining)
+
+        for step in range(total_new_tokens):
             if step == 0:
                 cur_ids = input_ids
                 start_pos = 0

@@ -173,3 +173,12 @@ def test_compare_table_format(tmp_path):
     table = format_table(rows)
     assert "baseline" in table
     assert "best_val_loss" in table
+
+
+def test_generate_respects_context_limit():
+    cfg = mythos_nano()
+    cfg.max_seq_len = 8
+    model = OpenMythos(cfg)
+    ids = torch.randint(0, cfg.vocab_size, (1, 7))
+    out = model.generate(ids, max_new_tokens=4, n_loops=2)
+    assert out.shape[1] == 8
