@@ -20,7 +20,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("metrics", nargs="+", help="One or more JSONL metric files.")
     parser.add_argument(
         "--sort-by",
-        choices=["label", "best_val_loss", "last_val_loss", "best_train_loss", "last_step"],
+        choices=[
+            "label",
+            "best_val_loss",
+            "last_val_loss",
+            "best_train_loss",
+            "last_step",
+            "last_tokens_per_sec",
+        ],
         default="best_val_loss",
     )
     parser.add_argument(
@@ -69,12 +76,15 @@ def summarize_run(path: str | Path) -> dict:
         "best_val_loss": minimum("val_loss"),
         "last_train_loss": float(last["train_loss"]),
         "last_val_loss": float(last["val_loss"]),
+        "last_tokens_per_sec": last.get("tokens_per_sec"),
         "variant": last.get("variant"),
         "preset": last.get("preset"),
         "attn_type": last.get("attn_type"),
         "recurrent_use_moe": last.get("recurrent_use_moe"),
         "use_act": last.get("use_act"),
         "n_loops": last.get("n_loops"),
+        "corpus_files": last.get("corpus_files"),
+        "corpus_chars": last.get("corpus_chars"),
     }
 
 
@@ -97,6 +107,8 @@ def format_table(rows: list[dict]) -> str:
         "use_act",
         "best_val_loss",
         "last_val_loss",
+        "last_tokens_per_sec",
+        "corpus_files",
         "best_train_loss",
         "last_step",
     ]

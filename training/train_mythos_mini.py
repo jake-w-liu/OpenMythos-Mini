@@ -12,6 +12,7 @@ Examples:
     python training/train_mythos_mini.py --variant nano --steps 20
     python training/train_mythos_mini.py --train-data data/my_notes.txt --variant tiny
     python training/train_mythos_mini.py --train-data ./corpus --variant small --use-moe
+    python training/train_mythos_mini.py --train-data . --include-code --preset deep_loops
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from contextlib import nullcontext
@@ -47,10 +49,46 @@ SMOKE_CORPUS = (
     "Use --train-data with your own text files for real experiments.\n"
 )
 
+DEFAULT_TEXT_EXTENSIONS = {".txt", ".md"}
+OPTIONAL_CODE_EXTENSIONS = {".py", ".toml", ".yaml", ".yml", ".json"}
+DEFAULT_EXCLUDED_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    ".venv-maccheck",
+    "__pycache__",
+    "runs",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-data", type=str, default=None)
+    parser.add_argument(
+        "--include-ext",
+        type=str,
+        default=None,
+        help="Comma-separated directory file extensions to include, e.g. '.md,.txt,.py'.",
+    )
+    parser.add_argument(
+        "--include-code",
+        action="store_true",
+        help="Include common code/config files like .py, .toml, .json, and .yaml.",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="Optional limit on how many files to read from a directory corpus.",
+    )
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=None,
+        help="Optional character cap for directory corpora to keep laptop runs bounded.",
+    )
     parser.add_argument("--variant", choices=sorted(VARIANTS), default="nano")
     parser.add_argument(
         "--preset",
@@ -117,21 +155,107 @@ def cosine_lr(step: int, total_steps: int, warmup_steps: int, max_lr: float, min
     return min_lr + 0.5 * (max_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
 
 
-def load_corpus(path: str | None) -> str:
+def normalize_extensions(include_ext: str | None, include_code: bool) -> tuple[str, ...]:
+    extensions = set(DEFAULT_TEXT_EXTENSIONS)
+    if include_ext:
+        extensions.update(
+            f".{part.strip().lower().lstrip('.')}"
+            for part in include_ext.split(",")
+            if part.strip()
+        )
+    if include_code:
+        extensions.update(OPTIONAL_CODE_EXTENSIONS)
+    return tuple(sorted(extensions))
+
+
+def load_text_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def collect_corpus_files(
+    source: Path,
+    include_ext: tuple[str, ...],
+    max_files: int | None,
+) -> list[Path]:
+    matches: list[Path] = []
+    for root, dirnames, filenames in os.walk(source):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in DEFAULT_EXCLUDED_DIRS
+        )
+        root_path = Path(root)
+        for filename in sorted(filenames):
+            path = root_path / filename
+            if path.suffix.lower() not in include_ext:
+                continue
+            matches.append(path)
+            if max_files is not None and len(matches) >= max_files:
+                return matches
+    return matches
+
+
+def load_corpus(
+    path: str | None,
+    include_ext: str | None = None,
+    include_code: bool = False,
+    max_files: int | None = None,
+    max_chars: int | None = None,
+) -> tuple[str, dict]:
     if path is None:
-        return SMOKE_CORPUS * 512
+        corpus = SMOKE_CORPUS * 512
+        return corpus, {
+            "source": "smoke_corpus",
+            "files_loaded": 1,
+            "chars_loaded": len(corpus),
+            "extensions": [],
+            "truncated": False,
+        }
 
     source = Path(path)
     if source.is_file():
-        return source.read_text(encoding="utf-8")
+        full_text = load_text_file(source)
+        corpus = full_text
+        if max_chars is not None:
+            corpus = corpus[:max_chars]
+        return corpus, {
+            "source": str(source),
+            "files_loaded": 1,
+            "chars_loaded": len(corpus),
+            "extensions": [source.suffix.lower()],
+            "truncated": max_chars is not None and len(corpus) < len(full_text),
+        }
 
     if source.is_dir():
-        parts = []
-        for file in sorted(source.rglob("*")):
-            if file.is_file() and file.suffix.lower() in {".txt", ".md"}:
-                parts.append(file.read_text(encoding="utf-8"))
-        if parts:
-            return "\n".join(parts)
+        extensions = normalize_extensions(include_ext, include_code)
+        files = collect_corpus_files(source, extensions, max_files=max_files)
+        if files:
+            parts = []
+            chars_loaded = 0
+            truncated = False
+            for file in files:
+                full_text = load_text_file(file)
+                text = full_text
+                if max_chars is not None:
+                    remaining = max_chars - chars_loaded
+                    if remaining <= 0:
+                        truncated = True
+                        break
+                    text = text[:remaining]
+                    if len(text) < len(full_text):
+                        truncated = True
+                parts.append(text)
+                chars_loaded += len(text)
+                if max_chars is not None and chars_loaded >= max_chars:
+                    truncated = True
+                    break
+
+            corpus = "\n".join(parts)
+            return corpus, {
+                "source": str(source),
+                "files_loaded": len(parts),
+                "chars_loaded": len(corpus),
+                "extensions": list(extensions),
+                "truncated": truncated,
+            }
 
     raise FileNotFoundError(
         f"Could not load text data from {path!r}. Pass a UTF-8 text file or directory."
@@ -347,7 +471,13 @@ def main() -> None:
         cfg = build_config(args, tokenizer.vocab_size)
     else:
         cfg = torch.load(resume_path, map_location="cpu", weights_only=False)["cfg"]
-    corpus = load_corpus(args.train_data)
+    corpus, corpus_meta = load_corpus(
+        args.train_data,
+        include_ext=args.include_ext,
+        include_code=args.include_code,
+        max_files=args.max_files,
+        max_chars=args.max_chars,
+    )
     dataset = ByteTextDataset(corpus, tokenizer, cfg.max_seq_len)
 
     model = OpenMythos(cfg).to(device)
@@ -402,6 +532,14 @@ def main() -> None:
     print(
         f"train_tokens={dataset.train_tokens.numel():,} val_tokens={dataset.val_tokens.numel():,}"
     )
+    print(
+        f"corpus_source={corpus_meta['source']} files={corpus_meta['files_loaded']} "
+        f"chars={corpus_meta['chars_loaded']:,}"
+    )
+    if corpus_meta["extensions"]:
+        print(f"corpus_extensions={','.join(corpus_meta['extensions'])}")
+    if corpus_meta["truncated"]:
+        print("note: corpus was truncated by --max-chars")
     if args.train_data is None:
         print("using built-in smoke corpus; pass --train-data for a real experiment")
     if args.steps <= start_step:
@@ -410,6 +548,7 @@ def main() -> None:
 
     model.train()
     t0 = time.perf_counter()
+    batch_tokens = args.batch_size * args.grad_accum * cfg.max_seq_len
 
     for step in range(start_step + 1, args.steps + 1):
         lr = cosine_lr(step - 1, args.steps, args.warmup_steps, args.lr, args.min_lr)
@@ -455,10 +594,11 @@ def main() -> None:
                 n_loops=cfg.max_loop_iters,
             )
             dt = time.perf_counter() - t0
+            tokens_per_sec = (step * batch_tokens) / max(dt, 1e-9)
             print(
                 f"step={step:04d} lr={lr:.2e} train_loss={losses['train']:.4f} "
                 f"val_loss={losses['val']:.4f} grad_norm={float(grad_norm):.2f} "
-                f"elapsed={dt:.1f}s"
+                f"elapsed={dt:.1f}s tok/s={tokens_per_sec:.1f}"
             )
             write_metrics(
                 args.metrics_file,
@@ -469,12 +609,16 @@ def main() -> None:
                     "val_loss": losses["val"],
                     "grad_norm": float(grad_norm),
                     "elapsed_sec": dt,
+                    "tokens_per_sec": tokens_per_sec,
                     "variant": variant_label,
                     "preset": args.preset,
                     "attn_type": cfg.attn_type,
                     "recurrent_use_moe": cfg.recurrent_use_moe,
                     "use_act": cfg.use_act,
                     "n_loops": cfg.max_loop_iters,
+                    "corpus_source": corpus_meta["source"],
+                    "corpus_files": corpus_meta["files_loaded"],
+                    "corpus_chars": corpus_meta["chars_loaded"],
                 },
             )
 

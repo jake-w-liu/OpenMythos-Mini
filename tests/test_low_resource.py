@@ -6,6 +6,7 @@ import torch
 from open_mythos import ByteTokenizer, OpenMythos, mythos_nano, mythos_small, mythos_tiny
 from training.train_mythos_mini import (
     apply_preset,
+    load_corpus,
     load_checkpoint,
     resolve_resume_path,
     save_checkpoint,
@@ -125,12 +126,14 @@ def test_compare_run_summary(tmp_path):
             "step": 1,
             "train_loss": 3.0,
             "val_loss": 4.0,
+            "tokens_per_sec": 100.0,
             "variant": "tiny",
             "preset": "baseline",
             "attn_type": "gqa",
             "recurrent_use_moe": False,
             "use_act": False,
             "n_loops": 4,
+            "corpus_files": 2,
         },
     )
     write_metrics(
@@ -139,12 +142,14 @@ def test_compare_run_summary(tmp_path):
             "step": 2,
             "train_loss": 2.5,
             "val_loss": 3.5,
+            "tokens_per_sec": 120.0,
             "variant": "tiny",
             "preset": "baseline",
             "attn_type": "gqa",
             "recurrent_use_moe": False,
             "use_act": False,
             "n_loops": 4,
+            "corpus_files": 2,
         },
     )
 
@@ -152,6 +157,7 @@ def test_compare_run_summary(tmp_path):
     assert summary["label"] == "baseline"
     assert summary["best_val_loss"] == 3.5
     assert summary["last_step"] == 2
+    assert summary["last_tokens_per_sec"] == 120.0
 
 
 def test_compare_table_format(tmp_path):
@@ -173,6 +179,33 @@ def test_compare_table_format(tmp_path):
     table = format_table(rows)
     assert "baseline" in table
     assert "best_val_loss" in table
+
+
+def test_load_corpus_directory_can_include_code_and_skip_generated_dirs(tmp_path):
+    (tmp_path / "notes.md").write_text("markdown corpus", encoding="utf-8")
+    (tmp_path / "module.py").write_text("print('code corpus')", encoding="utf-8")
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "ignored.md").write_text("should be ignored", encoding="utf-8")
+
+    default_text, default_meta = load_corpus(str(tmp_path))
+    assert "markdown corpus" in default_text
+    assert "code corpus" not in default_text
+    assert default_meta["files_loaded"] == 1
+
+    code_text, code_meta = load_corpus(str(tmp_path), include_code=True)
+    assert "markdown corpus" in code_text
+    assert "code corpus" in code_text
+    assert "should be ignored" not in code_text
+    assert code_meta["files_loaded"] == 2
+
+
+def test_load_corpus_respects_max_chars(tmp_path):
+    path = tmp_path / "notes.md"
+    path.write_text("abcdefghij", encoding="utf-8")
+
+    text, meta = load_corpus(str(path), max_chars=4)
+    assert text == "abcd"
+    assert meta["truncated"] is True
 
 
 def test_generate_respects_context_limit():

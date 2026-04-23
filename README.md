@@ -158,6 +158,9 @@ python training/train_mythos_mini.py --variant nano --steps 20
 # train on your own local text file or directory of .txt/.md files
 python training/train_mythos_mini.py --train-data ./data --variant tiny --steps 500
 
+# train on a broader local corpus that also includes .py/.toml/.json/.yaml
+python training/train_mythos_mini.py --train-data . --include-code --max-chars 2000000 --preset deep_loops --steps 500
+
 # resume from the most recent checkpoint in checkpoints-mini/
 python training/train_mythos_mini.py --train-data ./data --variant tiny --steps 1000 --resume latest
 
@@ -184,6 +187,27 @@ python training/compare_mythos_mini_runs.py runs/baseline.jsonl runs/deep_loops.
 - `mythos_nano`: CPU, Apple Silicon, or any CUDA GPU
 - `mythos_tiny`: 1 consumer GPU or a patient laptop run
 - `mythos_small`: 1 higher-memory consumer GPU recommended
+
+### Local Corpus Tips
+
+Directory training now supports a broader local-research workflow:
+
+- default directory mode reads `.txt` and `.md`
+- `--include-code` also pulls in `.py`, `.toml`, `.json`, `.yaml`, and `.yml`
+- common generated directories like `.git`, `__pycache__`, `.pytest_cache`, and `runs` are skipped
+- `--max-files` and `--max-chars` help keep MacBook-scale runs bounded
+
+Example:
+
+```bash
+python training/train_mythos_mini.py \
+  --train-data . \
+  --include-code \
+  --max-chars 2000000 \
+  --preset mla_probe \
+  --steps 500 \
+  --metrics-file runs/mini/mla_repo.jsonl
+```
 
 ### Example Ablation Workflow
 
